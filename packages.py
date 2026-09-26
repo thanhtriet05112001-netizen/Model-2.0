@@ -8,6 +8,20 @@ import json
 import time
 from datetime import datetime, timezone, timedelta
 
+# Import NLTK & download essential light tokenizers safely inside Streamlit
+import nltk
+
+@st.cache_resource
+def setup_nltk():
+    try:
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        nltk.download('punkt_tab', quiet=True)
+        nltk.download('punkt', quiet=True)
+
+setup_nltk()
+from nltk.tokenize import sent_tokenize, word_tokenize
+
 # ==========================================
 # 1. SETUP & CONFIGURATION
 # ==========================================
@@ -32,20 +46,21 @@ client = OpenAI(
 LOG_FILE = "interaction_logs.csv"
 
 # ==========================================
-# 2. DATA LOGGING, METRICS & TEXT HELPERS
+# 2. DATA LOGGING, NLTK METRICS & TEXT HELPERS
 # ==========================================
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Timestamp_VN", "Task Name", "Word Count", "WPM", "Lexical Diversity", "Accepted Edits", "Total Edits", "Chat Messages Sent", "Accepted Edit Details", "Full Draft"])
+        writer.writerow(["Timestamp_VN", "Task Name", "Word Count", "Sentence Count", "WPM", "Lexical Diversity", "Accepted Edits", "Total Edits", "Chat Messages Sent", "Accepted Edit Details", "Full Draft"])
 
-def save_interaction_csv(task_name, word_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
+def save_interaction_csv(task_name, word_count, sent_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
     with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
             datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
             task_name,
             word_count,
+            sent_count,
             round(wpm, 1),
             round(ttr, 2),
             accepted_edits,
@@ -55,21 +70,26 @@ def save_interaction_csv(task_name, word_count, wpm, ttr, accepted_edits, total_
             draft.replace("\n", " | ")
         ])
 
-def calculate_metrics(text, start_time):
-    words = re.findall(r'\b\w+\b', text.lower())
+def calculate_nltk_metrics(text, start_time):
+    # NLTK precise tokenization
+    tokens = word_tokenize(text)
+    words = [w.lower() for w in tokens if w.isalnum()]
     word_count = len(words)
+    
+    # NLTK accurate sentence splitting
+    sentences = sent_tokenize(text)
+    sentence_count = len(sentences) if sentences else 1
+    
     elapsed_time = max(time.time() - start_time, 1)
     wpm = (word_count / elapsed_time) * 60
+    
     unique_words = set(words)
     ttr = len(unique_words) / word_count if word_count > 0 else 0
-    return word_count, wpm, ttr
+    return word_count, sentence_count, wpm, ttr
 
 def safe_html_replace(text, original, html_replacement):
-    """Replaces whole phrases only, preventing partial word matches and HTML stacking."""
     escaped_orig = re.escape(original)
-    # Ensure the match isn't in the middle of a word
     pattern = r'(?<![a-zA-Z])' + escaped_orig + r'(?![a-zA-Z])'
-    # Replace only the first instance to avoid overlapping messes
     return re.sub(pattern, html_replacement, text, count=1)
 
 # ==========================================
@@ -94,7 +114,7 @@ def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
         "overall_feedback": "A short, encouraging paragraph summarizing strengths and weaknesses.",
         "edits": [
             {{
-                "original": "Include 2 to 4 words from the text to provide context (e.g., 'make an mistake' instead of just 'an'). MUST match the original text exactly. DO NOT overlap phrases with other edits.",
+                "original": "Include 2 to 4 words from the text to provide distinct context (e.g., 'make an mistake' instead of 'an'). MUST match the original text exactly.",
                 "correction": "The corrected phrase",
                 "explanation": "Brief explanation of the grammar/spelling rule"
             }}
@@ -141,7 +161,7 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner("Analyzing against IELTS rubrics..."):
+            with st.spinner("Analyzing with NLTK & IELTS rubrics..."):
                 image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
                 eval_data = get_ai_evaluation(task_name, task_prompt, student_text, image_b64)
                 
@@ -153,8 +173,9 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
                 for i in range(len(eval_data["edits"])):
                     st.session_state[f"edit_{i}"] = False
                 
-                words, wpm, ttr = calculate_metrics(student_text, st.session_state.start_time)
-                st.session_state.metrics = {"words": words, "wpm": wpm, "ttr": ttr}
+                # Calculate metrics with NLTK
+                words, sents, wpm, ttr = calculate_nltk_metrics(student_text, st.session_state.start_time)
+                st.session_state.metrics = {"words": words, "sents": sents, "wpm": wpm, "ttr": ttr}
                 st.rerun()
 
 # ==========================================
@@ -176,7 +197,6 @@ if st.session_state.get("evaluated", False):
         accepted_count = 0
         accepted_log_details = []
         
-        # Sort edits by length so longer contextual phrases are processed before single words
         sorted_edits = sorted(eval_data["edits"], key=lambda x: len(x['original']), reverse=True)
         
         for i, edit in enumerate(sorted_edits):
@@ -188,7 +208,6 @@ if st.session_state.get("evaluated", False):
         
         display_text = st.session_state.original_text
         for i, edit in enumerate(sorted_edits):
-            # Clean explanations for HTML embedding
             safe_explanation = edit['explanation'].replace("'", "&#39;").replace('"', '&quot;')
             
             if st.session_state.get(f"edit_{i}", False):
@@ -196,7 +215,6 @@ if st.session_state.get("evaluated", False):
             else:
                 html_replacement = f"<span class='error-highlight' title='{safe_explanation}'>{edit['original']}</span><span class='correction-preview'>[{edit['correction']}]</span>"
             
-            # Apply safe regex replacement
             display_text = safe_html_replace(display_text, edit['original'], html_replacement)
                 
         st.markdown("### 📄 Your Live Draft")
@@ -208,11 +226,11 @@ if st.session_state.get("evaluated", False):
             interaction_str = " | ".join(accepted_log_details) if accepted_log_details else "No edits accepted"
             
             save_interaction_csv(
-                task_name, metrics['words'], metrics['wpm'], metrics['ttr'], 
+                task_name, metrics['words'], metrics['sents'], metrics['wpm'], metrics['ttr'], 
                 accepted_count, len(eval_data["edits"]), user_chat_count, 
                 interaction_str, st.session_state.original_text
             )
-            st.success("Interaction metrics and revisions saved securely.")
+            st.success("Interaction metrics and NLTK analysis saved to CSV.")
 
     with chat_col:
         st.markdown("### 💬 Your Writing Coach")
