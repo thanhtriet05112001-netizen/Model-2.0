@@ -43,7 +43,34 @@ client = OpenAI(
     api_key=api_key,
 )
 
-LOG_FILE = "interaction_logs.csv"
+LOG_FILE = "interaction_logs.json"
+
+def save_interaction_json(task_name, word_count, sent_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
+    log_entry = {
+        "timestamp_vn": datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "task_name": task_name,
+        "word_count": word_count,
+        "sentence_count": sent_count,
+        "wpm": round(wpm, 1),
+        "lexical_diversity": round(ttr, 2),
+        "accepted_edits_count": accepted_edits,
+        "total_edits_count": total_edits,
+        "chat_messages_sent": chat_count,
+        "accepted_edit_details": interaction_details,
+        "full_draft": draft
+    }
+    
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+        except json.JSONDecodeError:
+            logs = []
+            
+    logs.append(log_entry)
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=4, ensure_ascii=False)
 
 # ==========================================
 # 2. DATA LOGGING, NLTK METRICS & TEXT HELPERS
@@ -148,7 +175,12 @@ with st.popover("⚙️ Admin Tools"):
     if admin_pass == st.secrets.get("ADMIN_PASSWORD", "secret123"):
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "rb") as f:
-                st.download_button("📥 Download Full CSV", f, file_name=f"writing_logs_{datetime.now(vn_tz).strftime('%Y%m%d')}.csv", mime="text/csv")
+                st.download_button(
+                    label="📥 Download Full JSON Logs", 
+                    data=f, 
+                    file_name=f"writing_logs_{datetime.now(vn_tz).strftime('%Y%m%d')}.json", 
+                    mime="application/json"
+                )
 
 with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.get("evaluated", False)):
     col_a, col_b = st.columns([1, 2])
