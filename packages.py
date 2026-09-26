@@ -135,5 +135,54 @@ if evaluate_button:
                     image_base64=image_bytes_base64
                 )
                 st.markdown(ai_feedback)
+                # Save interaction log quietly in the background
+                save_interaction(exam_type, task_name, words, ttr, ai_feedback)
             except Exception as e:
                 st.error(f"Error connecting to OpenRouter API: {e}")
+
+#log-in
+LOG_FILE = "interaction_logs.json"
+
+def save_interaction(exam_type, task_name, word_count, ttr, feedback):
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "exam_type": exam_type,
+        "task_name": task_name,
+        "word_count": word_count,
+        "lexical_diversity": round(ttr, 2),
+        "feedback_summary": feedback[:150] + "..."
+    }
+    
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        except json.JSONDecodeError:
+            logs = []
+            
+    logs.append(log_entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=4)
+
+st.markdown("---")
+    with st.expander("🔒 Admin Log Download"):
+        admin_pass = st.text_input("Admin Password", type="password")
+        expected_pass = st.secrets.get("ADMIN_PASSWORD", "mysecretpassword123")
+        
+        if admin_pass == expected_pass:
+            st.success("Authenticated!")
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "rb") as f:
+                    st.download_button(
+                        label="📥 Download JSON Logs",
+                        data=f,
+                        file_name="interaction_logs.json",
+                        mime="application/json"
+                    )
+            else:
+                st.info("No interaction logs recorded yet.")
+        elif admin_pass:
+            st.error("Incorrect password.")
+
+
