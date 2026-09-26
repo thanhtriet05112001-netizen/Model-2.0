@@ -13,14 +13,10 @@ from datetime import datetime, timezone, timedelta
 # ==========================================
 st.set_page_config(page_title="Companion in Writing", layout="wide", initial_sidebar_state="collapsed")
 
-# Modern Styling for Interactive Hover Highlights
 st.markdown("""
 <style>
-    /* Unaccepted Error: Red strikethrough with hover cursor */
     .error-highlight { background-color: #ffe6e6; color: #b30000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #ff9999; cursor: help; text-decoration: line-through; }
-    /* Preview of the correction next to the error */
     .correction-preview { color: #cc0000; font-size: 0.9em; margin-left: 4px; font-weight: bold; }
-    /* Accepted Fix: Green styling with hover cursor */
     .fixed-highlight { background-color: #e6ffe6; color: #006600; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #99cc99; cursor: help; }
 </style>
 """, unsafe_allow_html=True)
@@ -36,7 +32,7 @@ client = OpenAI(
 LOG_FILE = "interaction_logs.csv"
 
 # ==========================================
-# 2. DATA LOGGING & METRICS
+# 2. DATA LOGGING, METRICS & TEXT HELPERS
 # ==========================================
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE, mode="w", newline="", encoding="utf-8") as f:
@@ -68,14 +64,22 @@ def calculate_metrics(text, start_time):
     ttr = len(unique_words) / word_count if word_count > 0 else 0
     return word_count, wpm, ttr
 
+def safe_html_replace(text, original, html_replacement):
+    """Replaces whole phrases only, preventing partial word matches and HTML stacking."""
+    escaped_orig = re.escape(original)
+    # Ensure the match isn't in the middle of a word
+    pattern = r'(?<![a-zA-Z])' + escaped_orig + r'(?![a-zA-Z])'
+    # Replace only the first instance to avoid overlapping messes
+    return re.sub(pattern, html_replacement, text, count=1)
+
 # ==========================================
 # 3. AI PROMPT & RUBRICS
 # ==========================================
 def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
     if task_name == "IELTS Task 1 (Academic)":
-        rubric = "Grade based on: Task Achievement (accurate data overview and comparisons), Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
+        rubric = "Grade based on: Task Achievement, Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
     else:
-        rubric = "Grade based on: Task Response (clear position, developed arguments), Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
+        rubric = "Grade based on: Task Response, Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
 
     prompt_content = f"""
     You are 'Companion in Writing', an expert IELTS examiner and proactive writing coach.
@@ -84,18 +88,18 @@ def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
     Rubric: {rubric}
     Student Text: {student_text}
 
-    Provide your response STRICTLY as a valid JSON object with the following exact keys:
+    Provide your response STRICTLY as a valid JSON object with these exact keys:
     {{
         "band_score": "Estimated IELTS Band (e.g., 6.5)",
         "overall_feedback": "A short, encouraging paragraph summarizing strengths and weaknesses.",
         "edits": [
             {{
-                "original": "The EXACT misspelled word or grammatically incorrect phrase from the text (MUST match the text exactly, case-sensitive)",
-                "correction": "The corrected version",
+                "original": "Include 2 to 4 words from the text to provide context (e.g., 'make an mistake' instead of just 'an'). MUST match the original text exactly. DO NOT overlap phrases with other edits.",
+                "correction": "The corrected phrase",
                 "explanation": "Brief explanation of the grammar/spelling rule"
             }}
         ],
-        "coach_opening_chat": "A friendly, proactive question asking the student about a specific error you noticed, inviting them to discuss it."
+        "coach_opening_chat": "A friendly question asking the student about a specific error you noticed, inviting them to discuss it."
     }}
     """
     
@@ -172,7 +176,7 @@ if st.session_state.get("evaluated", False):
         accepted_count = 0
         accepted_log_details = []
         
-        # Sort edits by length descending so longer phrases are replaced before single words
+        # Sort edits by length so longer contextual phrases are processed before single words
         sorted_edits = sorted(eval_data["edits"], key=lambda x: len(x['original']), reverse=True)
         
         for i, edit in enumerate(sorted_edits):
@@ -182,19 +186,18 @@ if st.session_state.get("evaluated", False):
                 accepted_log_details.append(f"Fixed: {edit['original']}->{edit['correction']}")
             st.caption(f"*Why?* {edit['explanation']}")
         
-        # Generate the interactive Live Draft
         display_text = st.session_state.original_text
         for i, edit in enumerate(sorted_edits):
-            safe_explanation = edit['explanation'].replace("'", "&#39;") # Escape quotes for HTML tooltips
+            # Clean explanations for HTML embedding
+            safe_explanation = edit['explanation'].replace("'", "&#39;").replace('"', '&quot;')
             
             if st.session_state.get(f"edit_{i}", False):
-                # Accepted: Show correction in green, explanation on hover
                 html_replacement = f"<span class='fixed-highlight' title='{safe_explanation}'>{edit['correction']}</span>"
-                display_text = display_text.replace(edit['original'], html_replacement)
             else:
-                # Not accepted: Show original with red strikethrough + correction preview, explanation on hover
                 html_replacement = f"<span class='error-highlight' title='{safe_explanation}'>{edit['original']}</span><span class='correction-preview'>[{edit['correction']}]</span>"
-                display_text = display_text.replace(edit['original'], html_replacement)
+            
+            # Apply safe regex replacement
+            display_text = safe_html_replace(display_text, edit['original'], html_replacement)
                 
         st.markdown("### 📄 Your Live Draft")
         st.markdown(f"<div style='background-color: white; color: black; padding: 15px; border-radius: 5px; border: 1px solid #ddd; line-height: 1.8;'>{display_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
