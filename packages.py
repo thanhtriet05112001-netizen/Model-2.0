@@ -18,7 +18,6 @@ st.markdown("""
 <style>
     .error-highlight { background-color: #ffe6e6; color: #b30000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #ff9999; }
     .fixed-highlight { background-color: #e6ffe6; color: #006600; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #99cc99; }
-    .stApp { background-color: #f8f9fa; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -193,7 +192,7 @@ if st.session_state.get("evaluated", False):
                 display_text = display_text.replace(edit['original'], f"<span class='error-highlight'>{edit['original']}</span>")
                 
         st.markdown("### 📄 Your Live Draft (Before & After)")
-        st.markdown(f"<div style='background-color: white; padding: 15px; border-radius: 5px; border: 1px solid #ddd; line-height: 1.8;'>{display_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background-color: white; color: black; padding: 15px; border-radius: 5px; border: 1px solid #ddd; line-height: 1.8;'>{display_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
 
         if st.button("Save Revision Progress"):
             metrics = st.session_state.metrics
