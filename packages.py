@@ -2,6 +2,9 @@ import streamlit as st
 from openai import OpenAI
 import base64
 import re
+import json
+import os
+from datetime import datetime
 
 # 1. Page Configuration for a Wide Layout
 st.set_page_config(page_title="AI Writing Assessor", layout="wide")
@@ -13,7 +16,32 @@ client = OpenAI(
     api_key=api_key,
 )
 
-# 3. Pure Python Metrics Calculator
+LOG_FILE = "interaction_logs.json"
+
+# 3. Function to log interactions server-side
+def save_interaction(exam_type, task_name, word_count, ttr, feedback):
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "exam_type": exam_type,
+        "task_name": task_name,
+        "word_count": word_count,
+        "lexical_diversity": round(ttr, 2),
+        "feedback_summary": feedback[:150] + "..." # Save snippet of feedback
+    }
+    
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        except json.JSONDecodeError:
+            logs = []
+            
+    logs.append(log_entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=4)
+
+# 4. Pure Python Metrics Calculator
 def calculate_metrics(text):
     words = re.findall(r'\b\w+\b', text.lower())
     word_count = len(words)
@@ -26,9 +54,8 @@ def calculate_metrics(text):
     
     return word_count, sentence_count, lexical_diversity
 
-# 4. Define AI feedback function via OpenRouter (supports optional chart/image data)
+# 5. Define AI feedback function via OpenRouter
 def get_ai_feedback(exam_type, task_name, task_prompt, student_text, image_base64=None):
-    # Construct message content dynamically for vision models if an image is uploaded
     content_payload = [
         {
             "type": "text",
@@ -49,7 +76,6 @@ Student Text:
         }
     ]
     
-    # Include image if provided (useful for Task 1 charts/graphs)
     if image_base64:
         content_payload.append({
             "type": "image_url",
@@ -57,7 +83,7 @@ Student Text:
         })
 
     response = client.chat.completions.create(
-        model="openai/gpt-4o-mini",  # Supports both text and vision analysis via OpenRouter
+        model="openai/gpt-4o-mini",
         messages=[{"role": "user", "content": content_payload}]
     )
     return response.choices[0].message.content
@@ -66,7 +92,6 @@ Student Text:
 # UI LAYOUT: SIDEBAR & MAIN CONTAINER
 # ==========================================
 
-# Sidebar: Assessment Setup
 with st.sidebar:
     st.subheader("⚙️ Assessment Setup")
     exam_type = st.selectbox("Exam Type", ["IELTS", "TOEFL", "CEFR General", "Academic Writing"])
@@ -75,8 +100,27 @@ with st.sidebar:
     st.markdown("---")
     evaluate_button = st.button("Get Feedback", type="primary", use_container_width=True)
     
-    if not api_key:
-        st.warning("⚠️ Please connect your OpenRouter API key in Streamlit Secrets to begin.")
+    # --- PRIVATE ADMIN PANEL FOR LOGS ---
+    st.markdown("---")
+    with st.expander("🔒 Admin Log Download"):
+        admin_pass = st.text_input("Admin Password", type="password")
+        # Set your password in Streamlit secrets or hardcode a check here securely
+        expected_pass = st.secrets.get("ADMIN_PASSWORD", "mysecretpassword123")
+        
+        if admin_pass == expected_pass:
+            st.success("Authenticated!")
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "rb") as f:
+                    st.download_button(
+                        label="📥 Download JSON Logs",
+                        data=f,
+                        file_name="interaction_logs.json",
+                        mime="application/json"
+                    )
+            else:
+                st.info("No interaction logs recorded yet.")
+        elif admin_pass:
+            st.error("Incorrect password.")
 
 # Main Page Header
 st.title("📝 AI Writing Assessor")
@@ -85,11 +129,9 @@ st.markdown("Configure your prompt, upload charts or reference materials, and ev
 # Section 1: Task Prompt & Image Upload
 with st.container(border=True):
     st.markdown("### 📋 Task Prompt *(Optional)*")
-    st.caption("Enter the prompt or question context so the AI understands what the student was asked to write.")
-    task_prompt = st.text_area("Prompt Context", placeholder='e.g., "Write an essay analyzing the impact of technology on modern education..."', height=100, label_visibility="collapsed")
+    task_prompt = st.text_area("Prompt Context", placeholder='e.g., "Write an essay analyzing the impact of technology..."', height=100, label_visibility="collapsed")
     
     st.markdown("### 📊 Upload Chart / Graph *(Optional)*")
-    st.caption("For Task 1 visual data, upload an image to let the AI analyze the chart alongside the student text.")
     uploaded_image = st.file_uploader("Choose an image (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
     
     image_bytes_base64 = None
@@ -100,7 +142,6 @@ with st.container(border=True):
 # Section 2: Student Text Input
 with st.container(border=True):
     st.markdown("### ✍️ Student Writing")
-    st.caption("Required — paste the actual student submission below.")
     student_text = st.text_area("Student Text", placeholder="Paste student writing here...", height=220, label_visibility="collapsed")
 
 # ==========================================
@@ -135,5 +176,9 @@ if evaluate_button:
                     image_base64=image_bytes_base64
                 )
                 st.markdown(ai_feedback)
+                
+                # 4. Save interaction log quietly in the background
+                save_interaction(exam_type, task_name, words, ttr, ai_feedback)
+                
             except Exception as e:
                 st.error(f"Error connecting to OpenRouter API: {e}")
