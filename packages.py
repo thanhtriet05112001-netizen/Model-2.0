@@ -135,8 +135,6 @@ if evaluate_button:
                     image_base64=image_bytes_base64
                 )
                 st.markdown(ai_feedback)
-                # Save interaction log quietly in the background
-                save_interaction(exam_type, task_name, words, ttr, ai_feedback)
             except Exception as e:
                 st.error(f"Error connecting to OpenRouter API: {e}")
 
