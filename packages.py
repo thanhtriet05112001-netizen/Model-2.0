@@ -164,7 +164,7 @@ def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
 # ==========================================
 # 4. UI: COMPACT HEADER & SETUP
 # ==========================================
-st.title("✨ Companion in Writing")
+st.title("C.O.W")
 st.markdown("Your interactive IELTS workspace. Draft, review, and collaborate with your AI coach.")
 
 if "start_time" not in st.session_state:
