@@ -257,12 +257,12 @@ if st.session_state.get("evaluated", False):
             user_chat_count = len([m for m in st.session_state.messages if m["role"] == "user"])
             interaction_str = " | ".join(accepted_log_details) if accepted_log_details else "No edits accepted"
             
-            save_interaction_csv(
+            save_interaction_json(
                 task_name, metrics['words'], metrics['sents'], metrics['wpm'], metrics['ttr'], 
                 accepted_count, len(eval_data["edits"]), user_chat_count, 
                 interaction_str, st.session_state.original_text
             )
-            st.success("Interaction metrics and NLTK analysis saved to CSV.")
+            st.success("Interaction metrics and NLTK analysis saved to JSON.")
 
     with chat_col:
         st.markdown("### 💬 Your Writing Coach")
