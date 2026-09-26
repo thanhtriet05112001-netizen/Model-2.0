@@ -135,6 +135,8 @@ if evaluate_button:
                     image_base64=image_bytes_base64
                 )
                 st.markdown(ai_feedback)
+                # Save interaction log quietly in the background
+                save_interaction(exam_type, task_name, words, ttr, ai_feedback)
             except Exception as e:
                 st.error(f"Error connecting to OpenRouter API: {e}")
 
@@ -162,8 +164,16 @@ def save_interaction(exam_type, task_name, word_count, ttr, feedback):
     logs.append(log_entry)
     with open(LOG_FILE, "w") as f:
         json.dump(logs, f, indent=4)
-
-st.markdown("---")
+with st.sidebar:
+    st.subheader("⚙️ Assessment Setup")
+    exam_type = st.selectbox("Exam Type", ["IELTS", "TOEFL", "CEFR General", "Academic Writing"])
+    task_name = st.selectbox("Task / Module", ["Task 1", "Task 2", "Essay", "Letter / Report"])
+    
+    st.markdown("---")
+    evaluate_button = st.button("Get Feedback", type="primary", use_container_width=True)
+    
+    # --- PRIVATE ADMIN PANEL FOR LOGS ---
+    st.markdown("---")
     with st.expander("🔒 Admin Log Download"):
         admin_pass = st.text_input("Admin Password", type="password")
         expected_pass = st.secrets.get("ADMIN_PASSWORD", "mysecretpassword123")
@@ -182,5 +192,3 @@ st.markdown("---")
                 st.info("No interaction logs recorded yet.")
         elif admin_pass:
             st.error("Incorrect password.")
-
-
