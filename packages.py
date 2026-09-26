@@ -25,7 +25,7 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 # ==========================================
 # 1. SETUP & CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Companion in Writing", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="C.O.W", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
