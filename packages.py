@@ -294,3 +294,10 @@ if st.session_state.get("evaluated", False):
                         reply = response.choices[0].message.content
                         st.markdown(reply)
                         st.session_state.messages.append({"role": "assistant", "content": reply})
+
+import os
+import streamlit as st
+
+# Automatically checks Streamlit Secrets or Server Environment Variables
+api_key = st.secrets.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+admin_pass = st.secrets.get("ADMIN_PASSWORD") or os.environ.get("ADMIN_PASSWORD", "secret123")
