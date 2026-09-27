@@ -37,7 +37,7 @@ st.markdown("""
 
 vn_tz = timezone(timedelta(hours=7))
 
-api_key = st.secrets.get("OPENROUTER_API_KEY")
+api_key = os.environ.get("OPENROUTER_API_KEY") or (st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None)
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=api_key,
@@ -172,7 +172,8 @@ if "start_time" not in st.session_state:
 
 with st.popover("⚙️ Admin Tools"):
     admin_pass = st.text_input("Password", type="password")
-    if admin_pass == st.secrets.get("ADMIN_PASSWORD", "secret123"):
+    expected_admin_pass = os.environ.get("ADMIN_PASSWORD") or (st.secrets.get("ADMIN_PASSWORD") if os.path.exists(".streamlit/secrets.toml") else "secret123")
+if admin_pass == expected_admin_pass:
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "rb") as f:
                 st.download_button(
