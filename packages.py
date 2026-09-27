@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI
+import requests
 import base64
 import re
 import csv
@@ -36,15 +36,59 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 vn_tz = timezone(timedelta(hours=7))
-
-api_key = os.environ.get("OPENROUTER_API_KEY") or (st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None)
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key,
-)
+DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 
 LOG_FILE = "interaction_logs.json"
 
+# ==========================================
+# 2. OPENROUTER REQUEST HELPER (GEMMA 4 FREE)
+# ==========================================
+def call_openrouter_api(messages, user_api_key=None, response_format_json=False):
+    # Resolve API Key: User Input > Environment Variable > Streamlit Secrets
+    api_key = (user_api_key and user_api_key.strip()) or os.environ.get("OPENROUTER_API_KEY") or (
+        st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None
+    )
+    
+    if not api_key:
+        return None, "🔑 No API key provided. Please enter your OpenRouter key in the sidebar."
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": DEFAULT_MODEL,
+        "messages": messages,
+        "reasoning": {"enabled": True},
+        "provider": {
+            "only": ["google-ai-studio"],
+            "allow_fallbacks": False
+        }
+    }
+
+    if response_format_json:
+        payload["response_format"] = {"type": "json_object"}
+
+    try:
+        response = requests.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=60
+        )
+        res_data = response.json()
+        if "choices" in res_data and len(res_data["choices"]) > 0:
+            return res_data["choices"][0]["message"], None
+        else:
+            error_msg = res_data.get("error", {}).get("message", "Unknown OpenRouter API error")
+            return None, f"API Error: {error_msg}"
+    except Exception as e:
+        return None, f"Connection Error: {str(e)}"
+
+# ==========================================
+# 3. DATA LOGGING & METRICS
+# ==========================================
 def save_interaction_json(task_name, word_count, sent_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
     log_entry = {
         "timestamp_vn": datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
@@ -72,38 +116,11 @@ def save_interaction_json(task_name, word_count, sent_count, wpm, ttr, accepted_
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=4, ensure_ascii=False)
 
-# ==========================================
-# 2. DATA LOGGING, NLTK METRICS & TEXT HELPERS
-# ==========================================
-if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Timestamp_VN", "Task Name", "Word Count", "Sentence Count", "WPM", "Lexical Diversity", "Accepted Edits", "Total Edits", "Chat Messages Sent", "Accepted Edit Details", "Full Draft"])
-
-def save_interaction_csv(task_name, word_count, sent_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
-    with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
-            task_name,
-            word_count,
-            sent_count,
-            round(wpm, 1),
-            round(ttr, 2),
-            accepted_edits,
-            total_edits,
-            chat_count,
-            interaction_details,
-            draft.replace("\n", " | ")
-        ])
-
 def calculate_nltk_metrics(text, start_time):
-    # NLTK precise tokenization
     tokens = word_tokenize(text)
     words = [w.lower() for w in tokens if w.isalnum()]
     word_count = len(words)
     
-    # NLTK accurate sentence splitting
     sentences = sent_tokenize(text)
     sentence_count = len(sentences) if sentences else 1
     
@@ -120,9 +137,9 @@ def safe_html_replace(text, original, html_replacement):
     return re.sub(pattern, html_replacement, text, count=1)
 
 # ==========================================
-# 3. AI PROMPT & RUBRICS
+# 4. AI EVALUATION FUNCTION
 # ==========================================
-def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
+def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base64=None):
     if task_name == "IELTS Task 1 (Academic)":
         rubric = "Grade based on: Task Achievement, Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
     else:
@@ -150,19 +167,25 @@ def get_ai_evaluation(task_name, task_prompt, student_text, image_base64=None):
     }}
     """
     
-    payload = [{"type": "text", "text": prompt_content}]
+    user_payload = [{"type": "text", "text": prompt_content}]
     if image_base64:
-        payload.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
+        user_payload.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
 
-    response = client.chat.completions.create(
-        model="openai/gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": payload}]
-    )
-    return json.loads(response.choices[0].message.content)
+    messages = [{"role": "user", "content": user_payload}]
+    
+    message_data, error = call_openrouter_api(messages, user_api_key=user_key, response_format_json=True)
+    if error:
+        st.error(error)
+        return None
+
+    try:
+        return json.loads(message_data.get("content", "{}"))
+    except json.JSONDecodeError:
+        st.error("Model failed to return valid JSON. Please try again.")
+        return None
 
 # ==========================================
-# 4. UI: COMPACT HEADER & SETUP
+# 5. UI LAYOUT & SIDEBAR
 # ==========================================
 st.title("C.O.W")
 st.markdown("Your interactive IELTS workspace. Draft, review, and collaborate with your AI coach.")
@@ -170,10 +193,25 @@ st.markdown("Your interactive IELTS workspace. Draft, review, and collaborate wi
 if "start_time" not in st.session_state:
     st.session_state.start_time = time.time()
 
+# Sidebar for User API Key
+with st.sidebar:
+    st.subheader("🔑 API Key Setup")
+    user_api_key = st.text_input(
+        "OpenRouter Key (Optional)", 
+        type="password", 
+        help="Get a free key at https://openrouter.ai/keys"
+    )
+    st.session_state.user_api_key = user_api_key
+    if not user_api_key:
+        st.caption("ℹ️ Using default server key.")
+
+# Admin Tools Popover
 with st.popover("⚙️ Admin Tools"):
     admin_pass = st.text_input("Password", type="password")
-    expected_admin_pass = os.environ.get("ADMIN_PASSWORD") or (st.secrets.get("ADMIN_PASSWORD") if os.path.exists(".streamlit/secrets.toml") else "secret123")
-if admin_pass == expected_admin_pass:
+    expected_admin_pass = os.environ.get("ADMIN_PASSWORD") or (
+        st.secrets.get("ADMIN_PASSWORD") if os.path.exists(".streamlit/secrets.toml") else "secret123"
+    )
+    if admin_pass == expected_admin_pass:
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "rb") as f:
                 st.download_button(
@@ -183,6 +221,7 @@ if admin_pass == expected_admin_pass:
                     mime="application/json"
                 )
 
+# Drafting Section
 with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.get("evaluated", False)):
     col_a, col_b = st.columns([1, 2])
     with col_a:
@@ -194,32 +233,32 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner("Analyzing with NLTK & IELTS rubrics..."):
+            with st.spinner(f"Analyzing with Gemma 4 ({DEFAULT_MODEL})..."):
                 image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
-                eval_data = get_ai_evaluation(task_name, task_prompt, student_text, image_b64)
+                eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
                 
-                st.session_state.eval_data = eval_data
-                st.session_state.original_text = student_text
-                st.session_state.evaluated = True
-                st.session_state.messages = [{"role": "assistant", "content": eval_data["coach_opening_chat"]}]
-                
-                for i in range(len(eval_data["edits"])):
-                    st.session_state[f"edit_{i}"] = False
-                
-                # Calculate metrics with NLTK
-                words, sents, wpm, ttr = calculate_nltk_metrics(student_text, st.session_state.start_time)
-                st.session_state.metrics = {"words": words, "sents": sents, "wpm": wpm, "ttr": ttr}
-                st.rerun()
+                if eval_data:
+                    st.session_state.eval_data = eval_data
+                    st.session_state.original_text = student_text
+                    st.session_state.evaluated = True
+                    st.session_state.messages = [{"role": "assistant", "content": eval_data["coach_opening_chat"]}]
+                    
+                    for i in range(len(eval_data.get("edits", []))):
+                        st.session_state[f"edit_{i}"] = False
+                    
+                    words, sents, wpm, ttr = calculate_nltk_metrics(student_text, st.session_state.start_time)
+                    st.session_state.metrics = {"words": words, "sents": sents, "wpm": wpm, "ttr": ttr}
+                    st.rerun()
 
 # ==========================================
-# 5. INTERACTIVE WORKSPACE
+# 6. INTERACTIVE WORKSPACE
 # ==========================================
 if st.session_state.get("evaluated", False):
     eval_data = st.session_state.eval_data
     
     st.markdown("---")
-    st.subheader(f"🏆 Estimated Score: **{eval_data['band_score']}**")
-    st.info(eval_data['overall_feedback'])
+    st.subheader(f"🏆 Estimated Score: **{eval_data.get('band_score', 'N/A')}**")
+    st.info(eval_data.get('overall_feedback', ''))
     
     work_col, chat_col = st.columns([1.5, 1])
     
@@ -230,7 +269,8 @@ if st.session_state.get("evaluated", False):
         accepted_count = 0
         accepted_log_details = []
         
-        sorted_edits = sorted(eval_data["edits"], key=lambda x: len(x['original']), reverse=True)
+        edits_list = eval_data.get("edits", [])
+        sorted_edits = sorted(edits_list, key=lambda x: len(x['original']), reverse=True)
         
         for i, edit in enumerate(sorted_edits):
             is_accepted = st.checkbox(f"**Fix:** {edit['original']} ➔ {edit['correction']}", key=f"edit_{i}")
@@ -255,12 +295,12 @@ if st.session_state.get("evaluated", False):
 
         if st.button("Save Revision Progress"):
             metrics = st.session_state.metrics
-            user_chat_count = len([m for m in st.session_state.messages if m["role"] == "user"])
+            user_chat_count = len([m for m in st.session_state.messages if m.get("role") == "user"])
             interaction_str = " | ".join(accepted_log_details) if accepted_log_details else "No edits accepted"
             
             save_interaction_json(
                 task_name, metrics['words'], metrics['sents'], metrics['wpm'], metrics['ttr'], 
-                accepted_count, len(eval_data["edits"]), user_chat_count, 
+                accepted_count, len(edits_list), user_chat_count, 
                 interaction_str, st.session_state.original_text
             )
             st.success("Interaction metrics and NLTK analysis saved to JSON.")
@@ -268,10 +308,14 @@ if st.session_state.get("evaluated", False):
     with chat_col:
         st.markdown("### 💬 Your Writing Coach")
         chat_container = st.container(height=400)
+        
         with chat_container:
             for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+                # Render standard assistant and user string contents
+                msg_content = message.get("content")
+                if isinstance(msg_content, str):
+                    with st.chat_message(message["role"]):
+                        st.markdown(msg_content)
                     
         user_query = st.chat_input("Reply to your coach...")
         if user_query:
@@ -280,18 +324,16 @@ if st.session_state.get("evaluated", False):
                 with st.chat_message("user"):
                     st.markdown(user_query)
                 with st.chat_message("assistant"):
-                    with st.spinner("Typing..."):
-                        chat_prompt = f"""
-                        You are the 'Companion in Writing' IELTS coach.
-                        Original draft: {st.session_state.original_text}
-                        Feedback given: {eval_data['overall_feedback']}
-                        Student query: {user_query}
-                        Rule: Do not rewrite paragraphs for them. Explain grammar pedagogically.
-                        """
-                        response = client.chat.completions.create(
-                            model="openai/gpt-4o-mini",
-                            messages=[{"role": "user", "content": chat_prompt}]
+                    with st.spinner("Thinking..."):
+                        assistant_msg, error = call_openrouter_api(
+                            st.session_state.messages, 
+                            user_api_key=st.session_state.get("user_api_key"), 
+                            response_format_json=False
                         )
-                        reply = response.choices[0].message.content
-                        st.markdown(reply)
-                        st.session_state.messages.append({"role": "assistant", "content": reply})
+                        if error:
+                            st.error(error)
+                        else:
+                            reply_text = assistant_msg.get("content", "")
+                            st.markdown(reply_text)
+                            # Preserves the message structure along with reasoning_details
+                            st.session_state.messages.append(assistant_msg)
