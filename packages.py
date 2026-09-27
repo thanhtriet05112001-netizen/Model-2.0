@@ -36,6 +36,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 vn_tz = timezone(timedelta(hours=7))
+# Standard free Gemma model on OpenRouter
 DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 
 LOG_FILE = "interaction_logs.json"
@@ -43,7 +44,7 @@ LOG_FILE = "interaction_logs.json"
 # ==========================================
 # 2. OPENROUTER REQUEST HELPER
 # ==========================================
-def call_openrouter_api(messages, user_api_key=None, response_format_json=False):
+def call_openrouter_api(messages, user_api_key=None):
     # Resolve API Key: User Input > Environment Variable > Streamlit Secrets
     api_key = (user_api_key and user_api_key.strip()) or os.environ.get("OPENROUTER_API_KEY") or (
         st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None
@@ -59,22 +60,12 @@ def call_openrouter_api(messages, user_api_key=None, response_format_json=False)
         "X-Title": "Companion in Writing"
     }
 
+    # Clean payload without conflicting provider/schema parameters
     payload = {
         "model": DEFAULT_MODEL,
         "messages": messages,
-        "provider": {
-            "allow_fallbacks": True
-        }
+        "reasoning": {"enabled": True}
     }
-
-    # CRITICAL FIX: Reasoning conflicts with json_object mode on Google models
-    if response_format_json:
-        payload["response_format"] = {"type": "json_object"}
-        # Disable explicit reasoning for JSON calls to prevent provider rejection
-        payload["reasoning"] = {"enabled": False}
-    else:
-        # Keep reasoning enabled for conversational chat queries
-        payload["reasoning"] = {"enabled": True}
 
     try:
         response = requests.post(
@@ -159,7 +150,9 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
     Rubric: {rubric}
     Student Text: {student_text}
 
-    Provide your response STRICTLY as a valid JSON object with these exact keys:
+    IMPORTANT: Return ONLY a valid raw JSON object. Do not wrap it in markdown block quotes, do not output any introductory or concluding text.
+
+    Required JSON Structure:
     {{
         "band_score": "Estimated IELTS Band (e.g., 6.5)",
         "overall_feedback": "A short, encouraging paragraph summarizing strengths and weaknesses.",
@@ -172,7 +165,6 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         ],
         "coach_opening_chat": "A friendly question asking the student about a specific error you noticed, inviting them to discuss it."
     }}
-    Do NOT output markdown backticks around the JSON.
     """
     
     user_payload = [{"type": "text", "text": prompt_content}]
@@ -181,21 +173,21 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
 
     messages = [{"role": "user", "content": user_payload}]
     
-    message_data, error = call_openrouter_api(messages, user_api_key=user_key, response_format_json=True)
+    message_data, error = call_openrouter_api(messages, user_api_key=user_key)
     if error:
         st.error(error)
         return None
 
     raw_content = message_data.get("content", "{}")
     
-    # Robust Regex Extraction to parse { ... } JSON safely
+    # Extract JSON object safely using regex from raw text
     json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
     cleaned_content = json_match.group(0) if json_match else raw_content
 
     try:
         return json.loads(cleaned_content)
     except json.JSONDecodeError:
-        st.error("Model failed to parse valid JSON. Please try clicking Submit again.")
+        st.error("Failed to parse evaluation response into JSON. Please try clicking Submit again.")
         return None
 
 # ==========================================
@@ -247,7 +239,7 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner(f"Analyzing with Gemma 4 ({DEFAULT_MODEL})..."):
+            with st.spinner(f"Analyzing with OpenRouter ({DEFAULT_MODEL})..."):
                 image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
                 eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
                 
@@ -340,8 +332,7 @@ if st.session_state.get("evaluated", False):
                     with st.spinner("Thinking..."):
                         assistant_msg, error = call_openrouter_api(
                             st.session_state.messages, 
-                            user_api_key=st.session_state.get("user_api_key"), 
-                            response_format_json=False
+                            user_api_key=st.session_state.get("user_api_key")
                         )
                         if error:
                             st.error(error)
