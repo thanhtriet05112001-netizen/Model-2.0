@@ -55,19 +55,22 @@ def call_openrouter_api(messages, user_api_key=None, response_format_json=False)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://cow-writing-app.render.com",
+        "X-Title": "Companion in Writing"
     }
 
     payload = {
         "model": DEFAULT_MODEL,
         "messages": messages,
-        "reasoning": {"enabled": True},
         "provider": {
-            "only": ["google-ai-studio"],
-            "allow_fallbacks": False
+            "allow_fallbacks": True
         }
     }
 
-    if response_format_json:
+    # Enable reasoning for standard chat; use json_object format for evaluations
+    if not response_format_json:
+        payload["reasoning"] = {"enabled": True}
+    else:
         payload["response_format"] = {"type": "json_object"}
 
     try:
@@ -178,10 +181,13 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         st.error(error)
         return None
 
+    raw_content = message_data.get("content", "{}")
+    cleaned_content = re.sub(r"^```json\s*|\s*```$", "", raw_content.strip(), flags=re.MULTILINE)
+
     try:
-        return json.loads(message_data.get("content", "{}"))
+        return json.loads(cleaned_content)
     except json.JSONDecodeError:
-        st.error("Model failed to return valid JSON. Please try again.")
+        st.error("Model failed to parse valid JSON. Please click Submit again.")
         return None
 
 # ==========================================
@@ -311,7 +317,6 @@ if st.session_state.get("evaluated", False):
         
         with chat_container:
             for message in st.session_state.messages:
-                # Render standard assistant and user string contents
                 msg_content = message.get("content")
                 if isinstance(msg_content, str):
                     with st.chat_message(message["role"]):
@@ -335,5 +340,4 @@ if st.session_state.get("evaluated", False):
                         else:
                             reply_text = assistant_msg.get("content", "")
                             st.markdown(reply_text)
-                            # Preserves the message structure along with reasoning_details
                             st.session_state.messages.append(assistant_msg)
