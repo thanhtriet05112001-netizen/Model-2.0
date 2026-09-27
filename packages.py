@@ -36,36 +36,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 vn_tz = timezone(timedelta(hours=7))
-DEFAULT_MODEL = "google/gemma-4-31b-it:free"
+
+# Highly reliable free model for JSON structured responses
+DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 LOG_FILE = "interaction_logs.json"
 
 # ==========================================
-# 2. OPENROUTER REQUEST HELPER (MATCHING CURL)
+# 2. OPENROUTER API CALL HANDLER
 # ==========================================
-def call_openrouter_api(messages, user_api_key=None, is_eval=False):
-    # Resolve API Key: User Input > Environment Variable > Streamlit Secrets
-    api_key = (user_api_key and user_api_key.strip()) or os.environ.get("OPENROUTER_API_KEY") or (
-        st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None
-    )
+def call_openrouter_api(messages, user_api_key=None):
+    # API KEY PRIORITY:
+    # 1. User's manually entered key in sidebar
+    # 2. Server Key (ONLY if Admin authenticated)
+    api_key = None
+    
+    if user_api_key and user_api_key.strip():
+        api_key = user_api_key.strip()
+    elif st.session_state.get("is_admin_authenticated", False):
+        api_key = os.environ.get("OPENROUTER_API_KEY") or (
+            st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None
+        )
     
     if not api_key:
-        return None, "🔑 No API key provided. Please enter your OpenRouter key in the sidebar."
+        return None, "🔑 **API Key Required**: Please enter your OpenRouter API key in the sidebar to use the AI features."
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://cow-writing-app.render.com",
+        "X-Title": "Companion in Writing"
     }
 
-    # Clean payload matching the direct working curl request
     payload = {
         "model": DEFAULT_MODEL,
-        "messages": messages
+        "messages": messages,
+        "temperature": 0.3
     }
-
-    # Enable reasoning for interactive chat turns, omit during structural JSON evaluations
-    if not is_eval:
-        payload["reasoning"] = {"enabled": True}
 
     try:
         response = requests.post(
@@ -79,7 +86,7 @@ def call_openrouter_api(messages, user_api_key=None, is_eval=False):
         if "choices" in res_data and len(res_data["choices"]) > 0:
             return res_data["choices"][0]["message"], None
         else:
-            error_msg = res_data.get("error", {}).get("message", "Unknown OpenRouter API error")
+            error_msg = res_data.get("error", {}).get("message", "Unknown OpenRouter error")
             return None, f"API Error: {error_msg}"
     except Exception as e:
         return None, f"Connection Error: {str(e)}"
@@ -150,9 +157,7 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
     Rubric: {rubric}
     Student Text: {student_text}
 
-    IMPORTANT: Return ONLY a valid raw JSON object. Do not wrap it in markdown code blocks, do not output any introductory or concluding text.
-
-    Required JSON Structure:
+    IMPORTANT: Return ONLY a valid JSON object matching this structure:
     {{
         "band_score": "Estimated IELTS Band (e.g., 6.5)",
         "overall_feedback": "A short, encouraging paragraph summarizing strengths and weaknesses.",
@@ -165,6 +170,7 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         ],
         "coach_opening_chat": "A friendly question asking the student about a specific error you noticed, inviting them to discuss it."
     }}
+    Do NOT include markdown formatting or extra commentary outside the JSON block.
     """
     
     user_payload = [{"type": "text", "text": prompt_content}]
@@ -173,22 +179,21 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
 
     messages = [{"role": "user", "content": user_payload}]
     
-    # Call with is_eval=True to disable reasoning conflicts during JSON evaluation
-    message_data, error = call_openrouter_api(messages, user_api_key=user_key, is_eval=True)
+    message_data, error = call_openrouter_api(messages, user_api_key=user_key)
     if error:
         st.error(error)
         return None
 
     raw_content = message_data.get("content", "{}")
     
-    # Safely extract { ... } JSON block using regex
+    # Extract JSON safely
     json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
     cleaned_content = json_match.group(0) if json_match else raw_content
 
     try:
         return json.loads(cleaned_content)
     except json.JSONDecodeError:
-        st.error("Failed to parse evaluation response into JSON. Please click Submit again.")
+        st.error("Model failed to return valid JSON format. Please try submitting again.")
         return None
 
 # ==========================================
@@ -200,25 +205,31 @@ st.markdown("Your interactive IELTS workspace. Draft, review, and collaborate wi
 if "start_time" not in st.session_state:
     st.session_state.start_time = time.time()
 
-# Sidebar for User API Key
+# Sidebar Setup
 with st.sidebar:
-    st.subheader("🔑 API Key Setup")
+    st.subheader("🔑 OpenRouter API Key")
     user_api_key = st.text_input(
-        "OpenRouter Key (Optional)", 
+        "Enter Your API Key", 
         type="password", 
         help="Get a free key at https://openrouter.ai/keys"
     )
     st.session_state.user_api_key = user_api_key
-    if not user_api_key:
-        st.caption("ℹ️ Using default server key.")
+    
+    if st.session_state.get("is_admin_authenticated", False):
+        st.success("🔓 Admin Mode Active (Server Key Enabled)")
+    elif not user_api_key:
+        st.warning("⚠️ API Key required to run evaluations.")
 
-# Admin Tools Popover
+# Admin Popover Logic
 with st.popover("⚙️ Admin Tools"):
-    admin_pass = st.text_input("Password", type="password")
+    admin_pass = st.text_input("Admin Password", type="password")
     expected_admin_pass = os.environ.get("ADMIN_PASSWORD") or (
         st.secrets.get("ADMIN_PASSWORD") if os.path.exists(".streamlit/secrets.toml") else "secret123"
     )
+    
     if admin_pass == expected_admin_pass:
+        st.session_state.is_admin_authenticated = True
+        st.success("Authenticated as Admin.")
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "rb") as f:
                 st.download_button(
@@ -227,6 +238,8 @@ with st.popover("⚙️ Admin Tools"):
                     file_name=f"writing_logs_{datetime.now(vn_tz).strftime('%Y%m%d')}.json", 
                     mime="application/json"
                 )
+    else:
+        st.session_state.is_admin_authenticated = False
 
 # Drafting Section
 with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.get("evaluated", False)):
@@ -240,7 +253,7 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner(f"Analyzing with OpenRouter ({DEFAULT_MODEL})..."):
+            with st.spinner("Analyzing draft with OpenRouter..."):
                 image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
                 eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
                 
@@ -333,8 +346,7 @@ if st.session_state.get("evaluated", False):
                     with st.spinner("Thinking..."):
                         assistant_msg, error = call_openrouter_api(
                             st.session_state.messages, 
-                            user_api_key=st.session_state.get("user_api_key"),
-                            is_eval=False
+                            user_api_key=st.session_state.get("user_api_key")
                         )
                         if error:
                             st.error(error)
