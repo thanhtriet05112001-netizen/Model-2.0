@@ -37,8 +37,8 @@ st.markdown("""
 
 vn_tz = timezone(timedelta(hours=7))
 
-# Highly reliable free model for JSON structured responses
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# Official OpenRouter Free Model Router (or fallback to Gemma 4 Free)
+DEFAULT_MODEL = "openrouter/free"
 
 LOG_FILE = "interaction_logs.json"
 
@@ -186,7 +186,7 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
 
     raw_content = message_data.get("content", "{}")
     
-    # Extract JSON safely
+    # Safely extract { ... } JSON block using regex
     json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
     cleaned_content = json_match.group(0) if json_match else raw_content
 
@@ -253,7 +253,7 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner("Analyzing draft with OpenRouter..."):
+            with st.spinner("Analyzing draft with OpenRouter Free..."):
                 image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
                 eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
                 
