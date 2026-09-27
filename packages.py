@@ -36,15 +36,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 vn_tz = timezone(timedelta(hours=7))
-# Standard free Gemma model on OpenRouter
 DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 
 LOG_FILE = "interaction_logs.json"
 
 # ==========================================
-# 2. OPENROUTER REQUEST HELPER
+# 2. OPENROUTER REQUEST HELPER (MATCHING CURL)
 # ==========================================
-def call_openrouter_api(messages, user_api_key=None):
+def call_openrouter_api(messages, user_api_key=None, is_eval=False):
     # Resolve API Key: User Input > Environment Variable > Streamlit Secrets
     api_key = (user_api_key and user_api_key.strip()) or os.environ.get("OPENROUTER_API_KEY") or (
         st.secrets.get("OPENROUTER_API_KEY") if os.path.exists(".streamlit/secrets.toml") else None
@@ -55,17 +54,18 @@ def call_openrouter_api(messages, user_api_key=None):
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://cow-writing-app.render.com",
-        "X-Title": "Companion in Writing"
+        "Content-Type": "application/json"
     }
 
-    # Clean payload without conflicting provider/schema parameters
+    # Clean payload matching the direct working curl request
     payload = {
         "model": DEFAULT_MODEL,
-        "messages": messages,
-        "reasoning": {"enabled": True}
+        "messages": messages
     }
+
+    # Enable reasoning for interactive chat turns, omit during structural JSON evaluations
+    if not is_eval:
+        payload["reasoning"] = {"enabled": True}
 
     try:
         response = requests.post(
@@ -150,7 +150,7 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
     Rubric: {rubric}
     Student Text: {student_text}
 
-    IMPORTANT: Return ONLY a valid raw JSON object. Do not wrap it in markdown block quotes, do not output any introductory or concluding text.
+    IMPORTANT: Return ONLY a valid raw JSON object. Do not wrap it in markdown code blocks, do not output any introductory or concluding text.
 
     Required JSON Structure:
     {{
@@ -173,21 +173,22 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
 
     messages = [{"role": "user", "content": user_payload}]
     
-    message_data, error = call_openrouter_api(messages, user_api_key=user_key)
+    # Call with is_eval=True to disable reasoning conflicts during JSON evaluation
+    message_data, error = call_openrouter_api(messages, user_api_key=user_key, is_eval=True)
     if error:
         st.error(error)
         return None
 
     raw_content = message_data.get("content", "{}")
     
-    # Extract JSON object safely using regex from raw text
+    # Safely extract { ... } JSON block using regex
     json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
     cleaned_content = json_match.group(0) if json_match else raw_content
 
     try:
         return json.loads(cleaned_content)
     except json.JSONDecodeError:
-        st.error("Failed to parse evaluation response into JSON. Please try clicking Submit again.")
+        st.error("Failed to parse evaluation response into JSON. Please click Submit again.")
         return None
 
 # ==========================================
@@ -332,7 +333,8 @@ if st.session_state.get("evaluated", False):
                     with st.spinner("Thinking..."):
                         assistant_msg, error = call_openrouter_api(
                             st.session_state.messages, 
-                            user_api_key=st.session_state.get("user_api_key")
+                            user_api_key=st.session_state.get("user_api_key"),
+                            is_eval=False
                         )
                         if error:
                             st.error(error)
