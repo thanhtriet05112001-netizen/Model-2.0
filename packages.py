@@ -41,7 +41,7 @@ DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 LOG_FILE = "interaction_logs.json"
 
 # ==========================================
-# 2. OPENROUTER REQUEST HELPER (GEMMA 4 FREE)
+# 2. OPENROUTER REQUEST HELPER
 # ==========================================
 def call_openrouter_api(messages, user_api_key=None, response_format_json=False):
     # Resolve API Key: User Input > Environment Variable > Streamlit Secrets
@@ -67,11 +67,14 @@ def call_openrouter_api(messages, user_api_key=None, response_format_json=False)
         }
     }
 
-    # Enable reasoning for standard chat; use json_object format for evaluations
-    if not response_format_json:
-        payload["reasoning"] = {"enabled": True}
-    else:
+    # CRITICAL FIX: Reasoning conflicts with json_object mode on Google models
+    if response_format_json:
         payload["response_format"] = {"type": "json_object"}
+        # Disable explicit reasoning for JSON calls to prevent provider rejection
+        payload["reasoning"] = {"enabled": False}
+    else:
+        # Keep reasoning enabled for conversational chat queries
+        payload["reasoning"] = {"enabled": True}
 
     try:
         response = requests.post(
@@ -81,6 +84,7 @@ def call_openrouter_api(messages, user_api_key=None, response_format_json=False)
             timeout=60
         )
         res_data = response.json()
+        
         if "choices" in res_data and len(res_data["choices"]) > 0:
             return res_data["choices"][0]["message"], None
         else:
@@ -168,6 +172,7 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         ],
         "coach_opening_chat": "A friendly question asking the student about a specific error you noticed, inviting them to discuss it."
     }}
+    Do NOT output markdown backticks around the JSON.
     """
     
     user_payload = [{"type": "text", "text": prompt_content}]
@@ -182,12 +187,15 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         return None
 
     raw_content = message_data.get("content", "{}")
-    cleaned_content = re.sub(r"^```json\s*|\s*```$", "", raw_content.strip(), flags=re.MULTILINE)
+    
+    # Robust Regex Extraction to parse { ... } JSON safely
+    json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+    cleaned_content = json_match.group(0) if json_match else raw_content
 
     try:
         return json.loads(cleaned_content)
     except json.JSONDecodeError:
-        st.error("Model failed to parse valid JSON. Please click Submit again.")
+        st.error("Model failed to parse valid JSON. Please try clicking Submit again.")
         return None
 
 # ==========================================
