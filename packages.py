@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import base64
 import re
@@ -23,34 +24,165 @@ setup_nltk()
 from nltk.tokenize import sent_tokenize, word_tokenize
 
 # ==========================================
-# 1. SETUP & CONFIGURATION
+# 1. SETUP, MODERN STYLING & SKELETON ANIMATIONS
 # ==========================================
 st.set_page_config(page_title="C.O.W", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
+    /* Highlight Styles */
     .error-highlight { background-color: #ffe6e6; color: #b30000; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #ff9999; cursor: help; text-decoration: line-through; }
     .correction-preview { color: #cc0000; font-size: 0.9em; margin-left: 4px; font-weight: bold; }
     .fixed-highlight { background-color: #e6ffe6; color: #006600; padding: 2px 4px; border-radius: 3px; font-weight: bold; border: 1px solid #99cc99; cursor: help; }
+
+    /* Custom Loading Modal Overlay */
+    @keyframes pulse-glow {
+        0% { box-shadow: 0 0 10px rgba(0,102,204,0.2); }
+        50% { box-shadow: 0 0 25px rgba(0,102,204,0.6); }
+        100% { box-shadow: 0 0 10px rgba(0,102,204,0.2); }
+    }
+    
+    .loading-card {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 30px;
+        text-align: center;
+        border: 1px solid #e0e0e0;
+        animation: pulse-glow 2s infinite ease-in-out;
+        margin: 20px 0;
+    }
+
+    .loading-bar-container {
+        width: 100%;
+        background-color: #f0f0f0;
+        border-radius: 8px;
+        overflow: hidden;
+        margin-top: 15px;
+    }
+
+    .loading-bar-progress {
+        width: 100%;
+        height: 6px;
+        background: linear-gradient(90deg, #4a90e2, #50e3c2);
+        animation: shimmer 1.5s infinite linear;
+        background-size: 200% 100%;
+    }
+
+    @keyframes shimmer {
+        0% { background-position: -200% 0; }
+        100% { background-position: 200% 0; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 vn_tz = timezone(timedelta(hours=7))
-
-# Official OpenRouter Free Model Router (or fallback to Gemma 4 Free)
 DEFAULT_MODEL = "openrouter/free"
-
 LOG_FILE = "interaction_logs.json"
 
+# Initialize Session State
+if "telemetry_events" not in st.session_state:
+    st.session_state.telemetry_events = []
+if "last_action_timestamp" not in st.session_state:
+    st.session_state.last_action_timestamp = time.time()
+
 # ==========================================
-# 2. OPENROUTER API CALL HANDLER
+# 2. AUTOMATIC TELEMETRY & DATA LOGGING
+# ==========================================
+def log_telemetry_event(event_type, details=""):
+    """Tracks every user interaction and calculates exact pause/inactivity duration since last action."""
+    now = time.time()
+    pause_duration = round(now - st.session_state.last_action_timestamp, 2)
+    st.session_state.last_action_timestamp = now
+    
+    event_entry = {
+        "timestamp": datetime.now(vn_tz).strftime("%H:%M:%S.%f")[:-3],
+        "event_type": event_type,
+        "pause_before_action_seconds": pause_duration,
+        "details": details
+    }
+    st.session_state.telemetry_events.append(event_entry)
+    auto_save_session_log()
+
+def auto_save_session_log():
+    """Automatically persists interaction metrics and event logs without requiring user clicks."""
+    if not st.session_state.get("evaluated", False):
+        return
+
+    eval_data = st.session_state.eval_data
+    metrics = st.session_state.get("metrics", {})
+    edits_list = eval_data.get("edits", [])
+    
+    accepted_edits = [
+        f"{edit['original']}->{edit['correction']}"
+        for i, edit in enumerate(edits_list)
+        if st.session_state.get(f"edit_{i}", False)
+    ]
+
+    log_entry = {
+        "timestamp_vn": datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "task_name": st.session_state.get("task_name", "N/A"),
+        "word_count": metrics.get("words", 0),
+        "sentence_count": metrics.get("sents", 0),
+        "wpm": metrics.get("wpm", 0),
+        "lexical_diversity": metrics.get("ttr", 0),
+        "accepted_edits_count": len(accepted_edits),
+        "total_edits_count": len(edits_list),
+        "accepted_edit_details": " | ".join(accepted_edits) if accepted_edits else "None",
+        "raw_interaction_telemetry": st.session_state.telemetry_events,
+        "full_draft": st.session_state.get("original_text", "")
+    }
+
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+        except json.JSONDecodeError:
+            logs = []
+
+    # Update current session log if it exists, otherwise append
+    session_id = st.session_state.get("session_id", str(time.time()))
+    st.session_state.session_id = session_id
+    
+    updated = False
+    for i, entry in enumerate(logs):
+        if entry.get("session_id") == session_id:
+            entry.update(log_entry)
+            updated = True
+            break
+            
+    if not updated:
+        log_entry["session_id"] = session_id
+        logs.append(log_entry)
+
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(logs, f, indent=4, ensure_ascii=False)
+
+def calculate_nltk_metrics(text, start_time):
+    tokens = word_tokenize(text)
+    words = [w.lower() for w in tokens if w.isalnum()]
+    word_count = len(words)
+    
+    sentences = sent_tokenize(text)
+    sentence_count = len(sentences) if sentences else 1
+    
+    elapsed_time = max(time.time() - start_time, 1)
+    wpm = (word_count / elapsed_time) * 60
+    
+    unique_words = set(words)
+    ttr = len(unique_words) / word_count if word_count > 0 else 0
+    return word_count, sentence_count, wpm, ttr
+
+def safe_html_replace(text, original, html_replacement):
+    escaped_orig = re.escape(original)
+    pattern = r'(?<![a-zA-Z])' + escaped_orig + r'(?![a-zA-Z])'
+    return re.sub(pattern, html_replacement, text, count=1)
+
+# ==========================================
+# 3. OPENROUTER API HANDLER
 # ==========================================
 def call_openrouter_api(messages, user_api_key=None):
-    # API KEY PRIORITY:
-    # 1. User's manually entered key in sidebar
-    # 2. Server Key (ONLY if Admin authenticated)
     api_key = None
-    
     if user_api_key and user_api_key.strip():
         api_key = user_api_key.strip()
     elif st.session_state.get("is_admin_authenticated", False):
@@ -59,7 +191,7 @@ def call_openrouter_api(messages, user_api_key=None):
         )
     
     if not api_key:
-        return None, "🔑 **API Key Required**: Please enter your OpenRouter API key in the sidebar to use the AI features."
+        return None, "🔑 **API Key Required**: Please enter your OpenRouter API key in the sidebar."
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -91,64 +223,8 @@ def call_openrouter_api(messages, user_api_key=None):
     except Exception as e:
         return None, f"Connection Error: {str(e)}"
 
-# ==========================================
-# 3. DATA LOGGING & METRICS
-# ==========================================
-def save_interaction_json(task_name, word_count, sent_count, wpm, ttr, accepted_edits, total_edits, chat_count, interaction_details, draft):
-    log_entry = {
-        "timestamp_vn": datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "task_name": task_name,
-        "word_count": word_count,
-        "sentence_count": sent_count,
-        "wpm": round(wpm, 1),
-        "lexical_diversity": round(ttr, 2),
-        "accepted_edits_count": accepted_edits,
-        "total_edits_count": total_edits,
-        "chat_messages_sent": chat_count,
-        "accepted_edit_details": interaction_details,
-        "full_draft": draft
-    }
-    
-    logs = []
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        except json.JSONDecodeError:
-            logs = []
-            
-    logs.append(log_entry)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=4, ensure_ascii=False)
-
-def calculate_nltk_metrics(text, start_time):
-    tokens = word_tokenize(text)
-    words = [w.lower() for w in tokens if w.isalnum()]
-    word_count = len(words)
-    
-    sentences = sent_tokenize(text)
-    sentence_count = len(sentences) if sentences else 1
-    
-    elapsed_time = max(time.time() - start_time, 1)
-    wpm = (word_count / elapsed_time) * 60
-    
-    unique_words = set(words)
-    ttr = len(unique_words) / word_count if word_count > 0 else 0
-    return word_count, sentence_count, wpm, ttr
-
-def safe_html_replace(text, original, html_replacement):
-    escaped_orig = re.escape(original)
-    pattern = r'(?<![a-zA-Z])' + escaped_orig + r'(?![a-zA-Z])'
-    return re.sub(pattern, html_replacement, text, count=1)
-
-# ==========================================
-# 4. AI EVALUATION FUNCTION
-# ==========================================
 def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base64=None):
-    if task_name == "IELTS Task 1 (Academic)":
-        rubric = "Grade based on: Task Achievement, Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
-    else:
-        rubric = "Grade based on: Task Response, Coherence & Cohesion, Lexical Resource, and Grammatical Range & Accuracy."
+    rubric = "Task Achievement, Coherence & Cohesion, Lexical Resource, Grammatical Range." if "1" in task_name else "Task Response, Coherence & Cohesion, Lexical Resource, Grammatical Range."
 
     prompt_content = f"""
     You are 'Companion in Writing', an expert IELTS examiner and proactive writing coach.
@@ -163,30 +239,26 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         "overall_feedback": "A short, encouraging paragraph summarizing strengths and weaknesses.",
         "edits": [
             {{
-                "original": "Include 2 to 4 words from the text to provide distinct context (e.g., 'make an mistake' instead of 'an'). MUST match the original text exactly.",
+                "original": "Include 2 to 4 words from text for context. MUST match original text exactly.",
                 "correction": "The corrected phrase",
-                "explanation": "Brief explanation of the grammar/spelling rule"
+                "explanation": "Brief explanation of the rule"
             }}
         ],
-        "coach_opening_chat": "A friendly question asking the student about a specific error you noticed, inviting them to discuss it."
+        "coach_opening_chat": "A friendly question asking the student about a specific error."
     }}
-    Do NOT include markdown formatting or extra commentary outside the JSON block.
+    Do NOT include markdown formatting outside the JSON block.
     """
     
     user_payload = [{"type": "text", "text": prompt_content}]
     if image_base64:
         user_payload.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}})
 
-    messages = [{"role": "user", "content": user_payload}]
-    
-    message_data, error = call_openrouter_api(messages, user_api_key=user_key)
+    message_data, error = call_openrouter_api([{"role": "user", "content": user_payload}], user_api_key=user_key)
     if error:
         st.error(error)
         return None
 
     raw_content = message_data.get("content", "{}")
-    
-    # Safely extract { ... } JSON block using regex
     json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
     cleaned_content = json_match.group(0) if json_match else raw_content
 
@@ -197,51 +269,41 @@ def get_ai_evaluation(user_key, task_name, task_prompt, student_text, image_base
         return None
 
 # ==========================================
-# 5. UI LAYOUT & SIDEBAR
+# 4. HEADER & SIDEBAR NAVIGATION
 # ==========================================
-st.title("C.O.W")
+st.title("✨ C.O.W — Companion in Writing")
 st.markdown("Your interactive IELTS workspace. Draft, review, and collaborate with your AI coach.")
 
 if "start_time" not in st.session_state:
     st.session_state.start_time = time.time()
 
-# Sidebar Setup
 with st.sidebar:
     st.subheader("🔑 OpenRouter API Key")
-    user_api_key = st.text_input(
-        "Enter Your API Key", 
-        type="password", 
-        help="Get a free key at https://openrouter.ai/keys"
-    )
+    user_api_key = st.text_input("Enter Your Key", type="password", help="Get a free key at https://openrouter.ai/keys")
     st.session_state.user_api_key = user_api_key
     
     if st.session_state.get("is_admin_authenticated", False):
-        st.success("🔓 Admin Mode Active (Server Key Enabled)")
+        st.success("🔓 Admin Mode Active")
     elif not user_api_key:
-        st.warning("⚠️ API Key required to run evaluations.")
+        st.warning("⚠️ Key required for evaluation")
 
-# Admin Popover Logic
 with st.popover("⚙️ Admin Tools"):
     admin_pass = st.text_input("Admin Password", type="password")
     expected_admin_pass = os.environ.get("ADMIN_PASSWORD") or (
         st.secrets.get("ADMIN_PASSWORD") if os.path.exists(".streamlit/secrets.toml") else "secret123"
     )
-    
     if admin_pass == expected_admin_pass:
         st.session_state.is_admin_authenticated = True
         st.success("Authenticated as Admin.")
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "rb") as f:
-                st.download_button(
-                    label="📥 Download Full JSON Logs", 
-                    data=f, 
-                    file_name=f"writing_logs_{datetime.now(vn_tz).strftime('%Y%m%d')}.json", 
-                    mime="application/json"
-                )
+                st.download_button("📥 Download JSON Telemetry Logs", f, file_name=f"writing_logs_{datetime.now(vn_tz).strftime('%Y%m%d')}.json", mime="application/json")
     else:
         st.session_state.is_admin_authenticated = False
 
-# Drafting Section
+# ==========================================
+# 5. DRAFTING & SKELETON LOADING UI
+# ==========================================
 with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.get("evaluated", False)):
     col_a, col_b = st.columns([1, 2])
     with col_a:
@@ -253,25 +315,43 @@ with st.expander("📝 1. Task Setup & Drafting", expanded=not st.session_state.
     
     if st.button("Submit for Evaluation", type="primary"):
         if student_text.strip():
-            with st.spinner("Analyzing draft with OpenRouter Free..."):
-                image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
-                eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
+            log_telemetry_event("SUBMIT_DRAFT", f"Task: {task_name}, WordCount: {len(student_text.split())}")
+            
+            # POLISHED LOADING SKELETON OVERLAY
+            loading_placeholder = st.empty()
+            with loading_placeholder.container():
+                st.markdown("""
+                <div class="loading-card">
+                    <h3 style="color: #0066cc; margin-bottom: 8px;">🎓 Analyzing Writing Performance</h3>
+                    <p style="color: #666; font-size: 0.95em;">Applying IELTS criteria & evaluating grammatical structures...</p>
+                    <div class="loading-bar-container">
+                        <div class="loading-bar-progress"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            image_b64 = base64.b64encode(uploaded_image.read()).decode("utf-8") if uploaded_image else None
+            eval_data = get_ai_evaluation(st.session_state.get("user_api_key"), task_name, task_prompt, student_text, image_b64)
+            
+            loading_placeholder.empty()
+
+            if eval_data:
+                st.session_state.eval_data = eval_data
+                st.session_state.original_text = student_text
+                st.session_state.task_name = task_name
+                st.session_state.evaluated = True
+                st.session_state.messages = [{"role": "assistant", "content": eval_data["coach_opening_chat"]}]
                 
-                if eval_data:
-                    st.session_state.eval_data = eval_data
-                    st.session_state.original_text = student_text
-                    st.session_state.evaluated = True
-                    st.session_state.messages = [{"role": "assistant", "content": eval_data["coach_opening_chat"]}]
-                    
-                    for i in range(len(eval_data.get("edits", []))):
-                        st.session_state[f"edit_{i}"] = False
-                    
-                    words, sents, wpm, ttr = calculate_nltk_metrics(student_text, st.session_state.start_time)
-                    st.session_state.metrics = {"words": words, "sents": sents, "wpm": wpm, "ttr": ttr}
-                    st.rerun()
+                for i in range(len(eval_data.get("edits", []))):
+                    st.session_state[f"edit_{i}"] = False
+                
+                words, sents, wpm, ttr = calculate_nltk_metrics(student_text, st.session_state.start_time)
+                st.session_state.metrics = {"words": words, "sents": sents, "wpm": wpm, "ttr": ttr}
+                auto_save_session_log()
+                st.rerun()
 
 # ==========================================
-# 6. INTERACTIVE WORKSPACE
+# 6. FRAGMENTED INTERACTIVE WORKSPACE (NO FULL RELOAD)
 # ==========================================
 if st.session_state.get("evaluated", False):
     eval_data = st.session_state.eval_data
@@ -281,22 +361,26 @@ if st.session_state.get("evaluated", False):
     st.info(eval_data.get('overall_feedback', ''))
     
     work_col, chat_col = st.columns([1.5, 1])
-    
-    with work_col:
+
+    # Fragmented workspace ensures toggling edits DOES NOT reload the entire web app
+    @st.fragment
+    def render_revision_workspace():
         st.markdown("### 🔍 Interactive Revisions")
-        st.caption("Check the box to accept a correction. Hover over highlighted text in the draft below for explanations.")
-        
-        accepted_count = 0
-        accepted_log_details = []
+        st.caption("Check a box to accept a correction. Hover over highlighted text in the draft below for explanations.")
         
         edits_list = eval_data.get("edits", [])
         sorted_edits = sorted(edits_list, key=lambda x: len(x['original']), reverse=True)
         
         for i, edit in enumerate(sorted_edits):
-            is_accepted = st.checkbox(f"**Fix:** {edit['original']} ➔ {edit['correction']}", key=f"edit_{i}")
-            if is_accepted:
-                accepted_count += 1
-                accepted_log_details.append(f"Fixed: {edit['original']}->{edit['correction']}")
+            cb_key = f"edit_{i}"
+            prev_val = st.session_state.get(cb_key, False)
+            is_accepted = st.checkbox(f"**Fix:** {edit['original']} ➔ {edit['correction']}", key=cb_key)
+            
+            # Automatically record state toggles and pause intervals
+            if is_accepted != prev_val:
+                action_name = "ACCEPT_CORRECTION" if is_accepted else "REJECT_CORRECTION"
+                log_telemetry_event(action_name, f"Edit: {edit['original']} -> {edit['correction']}")
+                
             st.caption(f"*Why?* {edit['explanation']}")
         
         display_text = st.session_state.original_text
@@ -313,17 +397,8 @@ if st.session_state.get("evaluated", False):
         st.markdown("### 📄 Your Live Draft")
         st.markdown(f"<div style='background-color: white; color: black; padding: 15px; border-radius: 5px; border: 1px solid #ddd; line-height: 1.8;'>{display_text.replace(chr(10), '<br>')}</div>", unsafe_allow_html=True)
 
-        if st.button("Save Revision Progress"):
-            metrics = st.session_state.metrics
-            user_chat_count = len([m for m in st.session_state.messages if m.get("role") == "user"])
-            interaction_str = " | ".join(accepted_log_details) if accepted_log_details else "No edits accepted"
-            
-            save_interaction_json(
-                task_name, metrics['words'], metrics['sents'], metrics['wpm'], metrics['ttr'], 
-                accepted_count, len(edits_list), user_chat_count, 
-                interaction_str, st.session_state.original_text
-            )
-            st.success("Interaction metrics and NLTK analysis saved to JSON.")
+    with work_col:
+        render_revision_workspace()
 
     with chat_col:
         st.markdown("### 💬 Your Writing Coach")
@@ -338,6 +413,7 @@ if st.session_state.get("evaluated", False):
                     
         user_query = st.chat_input("Reply to your coach...")
         if user_query:
+            log_telemetry_event("SEND_CHAT_MESSAGE", user_query)
             st.session_state.messages.append({"role": "user", "content": user_query})
             with chat_container:
                 with st.chat_message("user"):
@@ -354,3 +430,4 @@ if st.session_state.get("evaluated", False):
                             reply_text = assistant_msg.get("content", "")
                             st.markdown(reply_text)
                             st.session_state.messages.append(assistant_msg)
+                            auto_save_session_log()
